@@ -1,0 +1,27 @@
+[package]
+name = "kns"
+version = "0.0.0"
+authors = ["Gregory Meyer <me@gregjm.dev>"]
+edition = "2018"
+license = "AGPL-3.0-or-later"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+kns-syscall = { path = "syscall" }
+
+[build-dependencies]
+cc = "^1.0.61"
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = 2
+lto = "thin"
+incremental = true
+codegen-units = 1
