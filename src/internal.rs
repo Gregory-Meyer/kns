@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub(crate) mod alloc;
+pub(crate) mod elf;
 pub(crate) mod errno;
 pub(crate) mod sync;
 
