@@ -772,8 +772,7 @@ static pthread_key_t _memory_thread_heap;
 #define _Thread_local __thread
 #endif
 #endif
-// TODO: real thread local!
-static heap_t *_memory_thread_heap;
+static _Thread_local heap_t *_memory_thread_heap = 1000;
 #endif
 
 static inline heap_t *get_thread_heap_raw(void) {

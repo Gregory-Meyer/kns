@@ -22,6 +22,9 @@
 extern "C" {
 #endif
 
+#define EXIT_SUCCESS ((int)0)
+#define EXIT_FAILURE ((int)1)
+
 extern long strtol(const char *nptr, char **endptr, int base);
 
 extern void *malloc(size_t size);

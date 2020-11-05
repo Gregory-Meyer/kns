@@ -15,7 +15,7 @@
 
 use crate::{c_char, c_int, c_long, c_void, errno, internal, stddef::size_t, stdio, syscall};
 
-use core::{hint, num::IntErrorKind, slice, str};
+use core::{hint, mem, num::IntErrorKind, slice, str};
 
 #[link(name = "kns-rpmalloc", kind = "static")]
 extern "C" {
@@ -50,6 +50,7 @@ pub unsafe extern "C" fn exit(status: c_int) -> ! {
     }
 
     internal::rpmalloc_finalize();
+    mem::drop(internal::MAIN_TCB.take().unwrap());
     sys::exit_group(status)
 }
 

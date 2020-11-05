@@ -40,7 +40,7 @@ pub struct stat {
     pub st_mode: mode_t,
     pub st_uid: uid_t,
     pub st_gid: gid_t,
-    pad0: c_unsignedlong,
+    pad0: c_int,
     pub st_rdev: dev_t,
     pub st_size: off_t,
     pub st_blksize: blksize_t,
