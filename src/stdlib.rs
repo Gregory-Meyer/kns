@@ -15,24 +15,112 @@
 
 use crate::{c_char, c_int, c_long, c_void, errno, internal, stddef::size_t, stdio, syscall};
 
-use core::{hint, mem, num::IntErrorKind, slice, str};
+use core::{hint, mem, num::IntErrorKind, ptr, slice, str};
 
 #[link(name = "kns-rpmalloc", kind = "static")]
 extern "C" {
-    pub fn malloc(size: size_t) -> *mut c_void;
-    pub fn free(ptr: *mut c_void);
-    pub fn calloc(nmemb: size_t, size: size_t) -> *mut c_void;
-    pub fn realloc(ptr: *mut c_void, size: size_t) -> *mut c_void;
+    fn rpmalloc(size: size_t) -> *mut c_void;
+    fn rpfree(ptr: *mut c_void);
+    fn rpcalloc(num: size_t, size: size_t) -> *mut c_void;
+    fn rprealloc(ptr: *mut c_void, size: size_t) -> *mut c_void;
+    fn rpposix_memalign(memptr: *mut *mut c_void, alignment: size_t, size: size_t) -> c_int;
+    fn rpaligned_alloc(alignment: size_t, size: size_t) -> *mut c_void;
+}
 
-    pub fn posix_memalign(memptr: *mut *mut c_void, alignment: size_t, size: size_t) -> c_int;
-    pub fn aligned_alloc(alignment: size_t, size: size_t) -> *mut c_void;
-    pub fn __KNS_aligned_calloc(alignment: size_t, nmemb: size_t, size: size_t) -> *mut c_void;
-    pub fn __KNS_aligned_realloc(
-        ptr: *mut c_void,
-        alignment: size_t,
-        size: size_t,
-        oldsize: size_t,
-    ) -> *mut c_void;
+#[no_mangle]
+pub unsafe extern "C" fn malloc(size: size_t) -> *mut c_void {
+    if size == 0 {
+        return ptr::null_mut();
+    }
+
+    let ptr = rpmalloc(size);
+
+    if ptr.is_null() {
+        *internal::errno() = errno::ENOMEM;
+    }
+
+    ptr
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn free(ptr: *mut c_void) {
+    rpfree(ptr);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn calloc(nmemb: size_t, size: size_t) -> *mut c_void {
+    if nmemb == 0 || size == 0 {
+        return ptr::null_mut();
+    }
+
+    let ptr = rpcalloc(nmemb, size);
+
+    if ptr.is_null() {
+        *internal::errno() = errno::ENOMEM;
+    }
+
+    ptr
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn realloc(ptr: *mut c_void, size: size_t) -> *mut c_void {
+    if ptr.is_null() {
+        malloc(size)
+    } else if size == 0 && !ptr.is_null() {
+        free(ptr);
+
+        ptr::null_mut()
+    } else {
+        let new_ptr = rprealloc(ptr, size);
+
+        if new_ptr.is_null() {
+            *internal::errno() = errno::ENOMEM;
+        }
+
+        new_ptr
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn posix_memalign(
+    memptr: *mut *mut c_void,
+    alignment: size_t,
+    size: size_t,
+) -> c_int {
+    if memptr.is_null()
+        || !alignment.is_power_of_two()
+        || (alignment % mem::size_of::<*mut c_void>() as size_t) != 0
+    {
+        errno::EINVAL
+    } else if size == 0 {
+        *memptr = ptr::null_mut();
+
+        0
+    } else {
+        rpposix_memalign(memptr, alignment, size)
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn aligned_alloc(alignment: size_t, size: size_t) -> *mut c_void {
+    if !alignment.is_power_of_two()
+        || (alignment % mem::size_of::<*mut c_void>() as size_t != 0)
+        || (size & (alignment - 1) != 0)
+    {
+        *internal::errno() = errno::EINVAL;
+
+        ptr::null_mut()
+    } else if size == 0 {
+        ptr::null_mut()
+    } else {
+        let ptr = rpaligned_alloc(alignment, size);
+
+        if ptr.is_null() {
+            *internal::errno() = errno::ENOMEM;
+        }
+
+        ptr
+    }
 }
 
 #[no_mangle]
@@ -49,8 +137,7 @@ pub unsafe extern "C" fn exit(status: c_int) -> ! {
         stdio::fclose(stdio::STDERR);
     }
 
-    internal::rpmalloc_finalize();
-    mem::drop(internal::MAIN_TCB.take().unwrap());
+    internal::finalize();
     sys::exit_group(status)
 }
 

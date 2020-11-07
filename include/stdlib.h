@@ -34,9 +34,6 @@ extern void *realloc(void *ptr, size_t size);
 
 extern int posix_memalign(void **memptr, size_t alignment, size_t size);
 extern void *aligned_alloc(size_t alignment, size_t size);
-extern void *__KNS_aligned_calloc(size_t alignment, size_t nmemb, size_t size);
-extern void *__KNS_aligned_realloc(void *ptr, size_t alignment, size_t size,
-                                   size_t oldsize);
 
 #ifdef __cplusplus
 } // extern "C"

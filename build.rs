@@ -59,7 +59,6 @@ fn main() {
 
     build.compile("kns-asm");
 
-    println!("cargo:rerun-if-changed=rpmalloc/malloc.c");
     println!("cargo:rerun-if-changed=rpmalloc/rpmalloc.c");
     println!("cargo:rerun-if-changed=rpmalloc/rpmalloc.h");
 
@@ -71,6 +70,5 @@ fn main() {
         .flag("-nodefaultlibs")
         .flag("-isysteminclude")
         .file("rpmalloc/rpmalloc.c")
-        .file("rpmalloc/malloc.c")
         .compile("kns-rpmalloc");
 }

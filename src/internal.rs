@@ -33,7 +33,7 @@ use crate::{
 use core::{
     convert::{TryFrom, TryInto},
     fmt::{self, Display, Formatter},
-    mem::{self, MaybeUninit},
+    mem,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
@@ -142,13 +142,12 @@ extern "C" {
     fn main(argc: c_int, argv: *mut *mut c_char, envp: *mut *mut c_char) -> c_int;
 }
 
-#[link(name = "kns-rpmalloc", kind = "static")]
-extern "C" {
-    pub fn rpmalloc_initialize() -> c_int;
-    pub fn rpmalloc_finalize() -> c_int;
-}
+static mut MAIN_TCB: Option<TCBBox> = None;
 
-pub(crate) static mut MAIN_TCB: Option<TCBBox> = None;
+pub(crate) unsafe fn finalize() {
+    alloc::finalize();
+    mem::drop(MAIN_TCB.take().unwrap());
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn __KNS_start(
@@ -213,8 +212,8 @@ pub unsafe extern "C" fn __KNS_start(
             .program_headers(self_slice)
             .find(|h| h.p_type == 7)
         {
-            TLS_TEMPLATE = Some(TLSTemplate {
-                initialized_template: slice::from_raw_parts(
+            tls::set_template(TLSTemplate {
+                initialized: slice::from_raw_parts(
                     tls_header.p_vaddr as *const u8,
                     tls_header.p_filesz as usize,
                 ),
@@ -240,7 +239,7 @@ pub unsafe extern "C" fn __KNS_start(
         );
         MAIN_TCB = Some(main_tcb);
 
-        assert_eq!(rpmalloc_initialize(), 0, "couldn't initialize rpmalloc");
+        alloc::initialize();
         main(argc.try_into().unwrap(), argv, envp)
     };
 
@@ -256,26 +255,9 @@ pub(crate) unsafe fn errno<'a>() -> &'a mut i32 {
     &mut tcb().errno
 }
 
-// DO NOT CHANGE OUTSIDE OF __KNS_start !!!
-static mut TLS_TEMPLATE: Option<TLSTemplate> = None;
+use tls::Template as TLSTemplate;
 
-#[derive(Copy, Clone, Debug)]
-struct TLSTemplate {
-    initialized_template: &'static [u8],
-    uninitialized_len: usize,
-    alignment: NonZeroUsize,
-}
-
-pub(crate) struct ThreadControlBlock {
-    this: *mut ThreadControlBlock,
-    errno: c_int,
-}
-
-pub(crate) struct TCBBox {
-    tcb_ptr: NonNull<ThreadControlBlock>,
-}
-
-const fn round_up_to_nearest_multiple(x: usize, multiple: usize) -> usize {
+pub(crate) const fn round_up_to_nearest_multiple(x: usize, multiple: usize) -> usize {
     if x % multiple != 0 {
         x + (multiple - x % multiple)
     } else {
@@ -283,12 +265,66 @@ const fn round_up_to_nearest_multiple(x: usize, multiple: usize) -> usize {
     }
 }
 
+mod tls {
+    use core::num::NonZeroUsize;
+
+    // DO NOT CHANGE OUTSIDE OF __KNS_start !!!
+    static mut TEMPLATE: Template = Template {
+        initialized: &[],
+        uninitialized_len: 0,
+        alignment: unsafe { NonZeroUsize::new_unchecked(1) },
+    };
+
+    #[derive(Copy, Clone, Debug)]
+    pub(crate) struct Template {
+        pub(crate) initialized: &'static [u8],
+        pub(crate) uninitialized_len: usize,
+        pub(crate) alignment: NonZeroUsize,
+    }
+
+    /// # Safety
+    ///
+    /// This function must be called *exactly* once, from __KNS_start. It must
+    /// be called before any TCBs are built.
+    pub(crate) unsafe fn set_template(template: Template) {
+        TEMPLATE = template;
+    }
+
+    fn template() -> Template {
+        unsafe { TEMPLATE }
+    }
+
+    pub(crate) fn len() -> usize {
+        template().initialized.len() + template().uninitialized_len
+    }
+
+    pub(crate) fn mmap_len() -> usize {
+        super::round_up_to_nearest_multiple(len(), 4096)
+    }
+
+    pub(crate) fn initialize(tls: &mut [u8]) {
+        assert_eq!(tls.len(), len());
+
+        tls[..template().initialized.len()].copy_from_slice(template().initialized);
+        // assume uninitialized memory is already zeroed -- only user is mmap
+    }
+}
+
+pub(crate) struct ThreadControlBlock {
+    _self: NonNull<ThreadControlBlock>,
+    pub(crate) errno: c_int,
+}
+
+pub(crate) struct TCBBox {
+    tcb_ptr: NonNull<ThreadControlBlock>,
+}
+
 impl TCBBox {
     pub(crate) fn new() -> Result<Self, ErrorNumber> {
         let ptr = ErrorNumber::from_syscall::<isize>(unsafe {
             mman::sys::mmap(
                 ptr::null_mut(),
-                Self::tcb_mmap_len() as size_t,
+                Self::mmap_len() as size_t,
                 mman::PROT_READ | mman::PROT_WRITE,
                 mman::MAP_PRIVATE | mman::MAP_ANONYMOUS,
                 -1,
@@ -296,52 +332,31 @@ impl TCBBox {
             )
         })?;
 
-        let tcb_ptr =
-            unsafe { (ptr as *mut u8).add(Self::tcb_mmap_offset()) as *mut ThreadControlBlock };
+        let tcb_ptr = NonNull::new(unsafe {
+            (ptr as *mut u8).add(tls::mmap_len()) as *mut ThreadControlBlock
+        })
+        .unwrap();
+
         unsafe {
             ptr::write(
-                tcb_ptr,
+                tcb_ptr.as_ptr(),
                 ThreadControlBlock {
-                    this: tcb_ptr,
+                    _self: tcb_ptr,
                     errno: 0,
                 },
             )
         };
 
-        if let Some(template) = unsafe { TLS_TEMPLATE } {
-            let tls_len = template.initialized_template.len() + template.uninitialized_len;
+        let this_tls = unsafe {
+            slice::from_raw_parts_mut((tcb_ptr.as_ptr() as *mut u8).sub(tls::len()), tls::len())
+        };
+        tls::initialize(this_tls);
 
-            let this_tcb_initialized_tls = unsafe {
-                slice::from_raw_parts_mut(
-                    (tcb_ptr as *mut u8).sub(tls_len),
-                    template.initialized_template.len(),
-                )
-            };
-            this_tcb_initialized_tls.copy_from_slice(template.initialized_template);
-        }
-
-        Ok(Self {
-            tcb_ptr: NonNull::new(tcb_ptr).unwrap(),
-        })
+        Ok(Self { tcb_ptr })
     }
 
-    fn tcb_tls_len() -> usize {
-        if let Some(template) = unsafe { TLS_TEMPLATE } {
-            template.initialized_template.len() + template.uninitialized_len
-        } else {
-            0
-        }
-    }
-
-    fn tcb_mmap_offset() -> usize {
-        round_up_to_nearest_multiple(Self::tcb_tls_len(), 4096)
-    }
-
-    fn tcb_mmap_len() -> usize {
-        const TCB_SIZE: usize = mem::size_of::<ThreadControlBlock>();
-        const TCB_PAGE_SIZE: usize = round_up_to_nearest_multiple(TCB_SIZE, 4096);
-
-        TCB_PAGE_SIZE + Self::tcb_mmap_offset()
+    fn mmap_len() -> usize {
+        tls::mmap_len() + mem::size_of::<ThreadControlBlock>()
     }
 }
 
@@ -349,8 +364,8 @@ impl Drop for TCBBox {
     fn drop(&mut self) {
         unsafe {
             mman::sys::munmap(
-                (self.tcb_ptr.as_ptr() as *mut u8).sub(Self::tcb_mmap_offset()) as *mut c_void,
-                Self::tcb_mmap_len() as size_t,
+                (self.tcb_ptr.as_ptr() as *mut u8).sub(tls::mmap_len()) as *mut c_void,
+                Self::mmap_len() as size_t,
             )
         };
     }

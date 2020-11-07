@@ -110,7 +110,9 @@ pub unsafe extern "C" fn __KNS_stdout() -> *mut FILE {
                 .is_ok()
             {
                 if (statbuf.st_mode & stat::S_IFMT) == stat::S_IFCHR {
-                    let buf = [0u8; b"/dev/null".len()];
+                    // one more byte than necessary
+                    // in case readlink(2) finds a path with the same prefix
+                    let buf = [0u8; b"/dev/null".len() + 1];
 
                     if let Ok(buflen) = ErrorNumber::from_syscall(unistd::sys::readlink(
                         b"/proc/self/fd/1\0".as_ptr() as *const c_char,
