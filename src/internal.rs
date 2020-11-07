@@ -233,13 +233,15 @@ pub unsafe extern "C" fn __KNS_start(
             Ok(b) => b,
             Err(e) => panic!("couldn't map thread control block for main thread: {}", e),
         };
-        syscall!(158, 0x1002, &mut main_tcb as *mut _ as isize);
+        syscall!(
+            158,
+            0x1002,
+            &mut *main_tcb as *mut ThreadControlBlock as isize
+        );
         MAIN_TCB = Some(main_tcb);
 
         assert_eq!(rpmalloc_initialize(), 0, "couldn't initialize rpmalloc");
-        let main_result = main(argc.try_into().unwrap(), argv, envp);
-
-        main_result
+        main(argc.try_into().unwrap(), argv, envp)
     };
 
     stdlib::exit(main_result)
@@ -308,6 +310,7 @@ impl TCBBox {
 
         if let Some(template) = unsafe { TLS_TEMPLATE } {
             let tls_len = template.initialized_template.len() + template.uninitialized_len;
+
             let this_tcb_initialized_tls = unsafe {
                 slice::from_raw_parts_mut(
                     (tcb_ptr as *mut u8).sub(tls_len),

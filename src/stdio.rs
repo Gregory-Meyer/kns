@@ -69,7 +69,7 @@ impl FILE {
 
 pub const EOF: c_int = -1;
 
-const DEFAULT_BUFLEN: usize = 64 * (1 << 10); // 64 KiB; it's big I know!
+const DEFAULT_BUFLEN: usize = 4 * (1 << 20); // 4 MiB; it's big I know!
 
 pub const STDIN_FILENO: c_int = 0;
 pub const STDOUT_FILENO: c_int = 1;
